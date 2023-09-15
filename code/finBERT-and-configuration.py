@@ -7,6 +7,8 @@ import yfinance as yf
 import alpaca_trade_api as tradeapi
 import os
 
+# Setting up Alpaca api
+
 ENDPOINT = 'https://api.alpaca.markets'
 KEY = 'Contact ntcherev for details'
 SECRET_KEY = 'Contact ntcherev for details'
@@ -14,9 +16,13 @@ SECRET_KEY = 'Contact ntcherev for details'
 api = tradeapi.REST(key_id=KEY, secret_key=SECRET_KEY, 
                     base_url=ENDPOINT, api_version='v2')
 
+# Access to the finBERT model
+
 finbert = BertForSequenceClassification.from_pretrained('yiyanghkust/finbert-tone',num_labels=3)
 tokenizer = BertTokenizer.from_pretrained('yiyanghkust/finbert-tone')
 nlp = pipeline("sentiment-analysis", model=finbert, tokenizer=tokenizer)
+
+# helper variables and dataframe initialization
 
 directory = 'out-text-analysis'
 iter = 0
@@ -25,6 +31,8 @@ invalid_days = set([5, 6, 0])
 
 final_df=pd.DataFrame(columns = ['TIC','cur_price','old_price', 'new_price', 'old_week_price', 'new_week_price',
                                   'date', 'posRel', 'negRel', 'pos', 'neg', 'sector', 'industry', 'beta', 'mktcap'] )
+
+# iterate through every file in the directory
 
 for filename in os.listdir(directory):
     print(iter)
@@ -38,6 +46,8 @@ for filename in os.listdir(directory):
         ticker = contents_split[-1].split(' ')[1]
 
         sentences = ' '.join(contents_split[13:]).split(".")
+
+      # Make sure that the returns from surrounding dates of the earning call fall on valid trading days to avoid issues with Alpaca
 
         date = dt.datetime.strptime(contents_split[8].split('ending')[1], format)
         if date.weekday() in invalid_days:
@@ -75,6 +85,8 @@ for filename in os.listdir(directory):
 
         print('Prices loaded')
 
+        # Calculate our sentiment scores from FinBERT analysis
+      
         results = nlp(sentences)
 
         num = len(results)
@@ -95,6 +107,8 @@ for filename in os.listdir(directory):
 
         print("Sentiment worked!")
 
+       # Pull metadata from yfinance
+      
         try:
             yfinfo = yf.Ticker(ticker)
             sector = yfinfo.info['sector']
@@ -122,5 +136,7 @@ for filename in os.listdir(directory):
         print(str(iter) + " failed!")
     
     iter += 1
+
+# Save final dataframe
         
 final_df.to_csv('finalData.csv')
