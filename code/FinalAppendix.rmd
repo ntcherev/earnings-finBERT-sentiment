@@ -1,0 +1,546 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Code Appendix
+
+Here we have the code appendix for our web scraping, sentiment analysis and multi-level modeling. Below, we used the R package reticulate to attempt to make our results reproduceable in an R environment from a Python Module. Our first python module functions properly, however, the second one fails to run, since reticulate has experienced some bugs downloading particular python packages and libraries, namely the alpaca-api the yfinance api and timedelta. However, if your machine is able to install these packages, feel free to run this appendix to create the finalData.csv with your own Alpaca Api or contact ntcherev@andrew.cmu.edu for more details. Notice that the code chunks in the appendix have all the necessary code necessary to replicate this report, so you can also extract the python modules from this appendix and run it in a normal python environment. If you have access to the "finalData.csv" you can copy the code from the "Modeling and Statistical Analysis in R" and on to reproduce our hierarchical model results!
+
+
+```{r, echo = TRUE, eval=FALSE}
+
+library(reticulate)
+
+py_run_file("download_calls_txt.py")
+```
+
+## Python Module 1
+
+```{python, echo = TRUE, eval = FALSE}
+
+import pathlib
+import requests
+from os.path import exists
+from bs4 import BeautifulSoup
+import lxml.html
+ 
+ 
+listofurls = []
+for pageno in range(1, 25):
+   url = f'https://www.fool.com/earnings-call-transcripts/?page={pageno}'
+   headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
+   (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36'}
+   response = requests.get(url, headers=headers, timeout=100)
+   page = response.text
+   soup = BeautifulSoup(page, "lxml")
+   for a in soup.find(class_="page").find_all(lambda x: x.name == 'a' and 
+   x.get('class') == ['text-gray-1100']):
+       listofurls.append('https://www.fool.com'+str(a['href']))
+print(len(listofurls))
+
+for idx, url in enumerate(listofurls):
+   path = pathlib.PurePath(url)
+   filename = 'out-text-analysis/' + path.name + '.txt'
+   if exists(filename):
+       print("Hello!")
+       continue
+ 
+   response = requests.get(url, headers=headers, timeout=100)
+   page = response.text
+   soup = BeautifulSoup(page, features="html.parser")
+ 
+   for script in soup(["script", "style"]):
+       script.extract()
+  
+   text = soup.get_text()
+ 
+   lines = (line.strip() for line in text.splitlines())
+ 
+   chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+ 
+   text = '\n'.join(chunk for chunk in chunks if chunk)
+   textClean = '\n'.join(text.split("\n")[308:])
+   textFullClean = textClean.split("All earnings call transcripts")[0]
+ 
+ 
+   with open(filename, "w") as file:
+           file.write(str(textFullClean)
+  
+```
+
+
+```{r, echo=TRUE, eval=FALSE}
+py_run_file("configure_df.py")
+```
+
+## Python Module 2
+
+```{python, echo=TRUE, eval=FALSE}
+from transformers import BertTokenizer, BertForSequenceClassification
+from transformers import pipeline
+import pandas as pd
+import alpaca_trade_api as tradeapi
+import datetime as dt
+import datedelta
+import os
+import yfinance as yf
+
+
+ENDPOINT = 'https://api.alpaca.markets'
+KEY = "API KEY CONTACT NTCHEREV FOR ACCESS"
+SECRET_KEY = "API SECRET KEY CONTACT NTCHEREV FOR ACCESS"
+
+api = tradeapi.REST(key_id=KEY, secret_key=SECRET_KEY, 
+                    base_url=ENDPOINT, api_version='v2')
+                    
+print("API Connected")
+
+finbert = BertForSequenceClassification.from_pretrained('yiyanghkust/finbert-tone',num_labels=3)
+tokenizer = BertTokenizer.from_pretrained('yiyanghkust/finbert-tone')
+nlp = pipeline("sentiment-analysis", model=finbert, tokenizer=tokenizer)
+
+print("Model Downloaded")
+
+directory = 'out-text-analysis'
+iter = 0
+format = ' %B %d, %Y.'
+invalid_days = set([5, 6, 0])
+
+final_df=pd.DataFrame(columns = ['TIC','cur_price','old_price', 'new_price', 
+'old_week_price', 'new_week_price','date', 'posRel', 'negRel', 'pos', 'neg', 
+'sector', 'industry', 'beta', 'mktcap'] )
+
+for filename in os.listdir(directory):
+    print(iter)
+
+    try:
+        f = os.path.join(directory, filename)
+        a_file = open(f)
+        file_contents = a_file.read()
+        
+        contents_split = file_contents.splitlines()
+        ticker = contents_split[-1].split(' ')[1]
+
+        sentences = ' '.join(contents_split[13:]).split(".")
+
+        date = dt.datetime.strptime(contents_split[8].split('ending')[1], format)
+        if date.weekday() in invalid_days:
+            date = date + 3*datedelta.DAY
+        cur_date = date.strftime("%Y-%m-%d")
+        month_back = date - datedelta.MONTH
+
+        if month_back.weekday() in invalid_days:
+            month_back = month_back + 3*datedelta.DAY
+
+        week_back = date - datedelta.WEEK
+        if week_back.weekday() in invalid_days:
+            week_back = week_back + 3*datedelta.DAY
+
+        week_forward = date + datedelta.WEEK
+        if week_forward.weekday() in invalid_days:
+            week_forward = week_forward+ 3*datedelta.DAY
+
+
+        month_forward = date + datedelta.MONTH
+        if month_forward.weekday() in invalid_days:
+            month_forward = month_forward + 3*datedelta.DAY
+
+        month_back_str = month_back.strftime("%Y-%m-%d")
+        month_forward_str = month_forward.strftime("%Y-%m-%d")
+        week_forward_str = week_forward.strftime("%Y-%m-%d")
+        week_back_str = week_back.strftime("%Y-%m-%d")
+
+
+        week_back_price = api.get_bars(ticker, '1Day', week_back_str, 
+        week_back_str, adjustment='raw').df.close[0]
+        week_forward_price = api.get_bars(ticker, '1Day', week_forward_str, 
+        week_forward_str, adjustment='raw').df.close[0]
+        month_back_price = api.get_bars(ticker, '1Day', month_back_str, 
+        month_back_str, adjustment='raw').df.close[0]
+        month_forward_price = api.get_bars(ticker, '1Day', month_forward_str, 
+        month_forward_str, adjustment='raw').df.close[0]
+        call_price = api.get_bars(ticker, '1Day', cur_date, cur_date, 
+        adjustment='raw').df.close[0]
+
+        print('Prices loaded')
+
+        results = nlp(sentences)
+
+        num = len(results)
+        positive = 0
+
+        neutral = 0
+        negative = 0
+        for sentence in results:
+            if sentence['label'] == 'Neutral':
+                neutral = neutral + 1
+            elif sentence['label'] == 'Positive':
+                positive = positive + 1
+            else:
+                negative = negative + 1
+                
+        negative_rel = negative/num
+        positive_rel = positive/num
+
+        print("Sentiment worked!")
+
+        try:
+            yfinfo = yf.Ticker(ticker)
+            sector = yfinfo.info['sector']
+            industry = yfinfo.info['industry']
+            mktcap = yfinfo.info['marketCap']
+            beta = yfinfo.info['beta']
+            print('Metadata secured')
+
+        except:
+            print('Metadata failed')
+            sector = 'NA'
+            industry = 'NA'
+            mktcap = -9999
+            beta = -9999
+
+        final_df.loc[len(final_df.index)] = [ticker, call_price, month_back_price,
+                                        month_forward_price, week_back_price, 
+                                        week_forward_price,cur_date, positive_rel, negative_rel,
+                                        positive, negative, sector, industry, beta, mktcap]
+
+        print(ticker + " worked! " + str(iter) + " Done")
+
+
+    except Exception as e:
+        print(e)
+        print(str(iter) + " failed!")
+    
+    iter += 1
+        
+final_df.to_csv('finalData.csv')
+
+```
+
+## Modeling and Statistical Analysis in R
+
+```{r, echo=TRUE, eval=FALSE}
+library(ggplot2)
+library(lme4)
+library(arm)
+library(HLMdiag)
+library(leaps)
+library(LMERConvenienceFunctions)
+```
+
+```{r, echo=TRUE, eval=FALSE}
+library(cmu.textstat)
+library(tidyverse)
+library(quanteda)
+library(quanteda.textstats)
+library(nFactors)
+library(ggridges)
+library(ggplot2)
+
+
+```
+
+## Read the Data, Set up necessary Variables, Data Exploration
+
+```{r, echo=TRUE, eval=FALSE}
+sentiment <- read.csv('sentiment-data.csv')
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+sentiment$mb_returns <- (sentiment$cur_price - sentiment$old_price)/sentiment$old_price
+sentiment$mf_returns <- (sentiment$new_price - sentiment$cur_price)/sentiment$cur_price
+sentiment$wb_returns <- (sentiment$cur_price - sentiment$old_week_price)/sentiment$old_week_price
+sentiment$wf_returns <- (sentiment$new_week_price - sentiment$cur_price)/sentiment$cur_price
+
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+earlyfiles_list <- list.files("out-text-analysis", full.names = T)
+
+corpus2021 <- earlyfiles_list %>%
+  readtext::readtext()%>%
+  mutate(text = str_squish(text))
+
+dfm2021 <- corpus(corpus2021) %>%
+  tokens(what="fastestword", remove_numbers=TRUE) %>%
+  tokens_compound(pattern = phrase(multiword_expressions)) %>%
+  dfm()
+
+tokens <- sum(dfm2021@x)
+```
+
+```{r, echo=TRUE, eval=FALSE}
+sentiment.no <- sentiment[sentiment$TIC != 'NLY', ]
+
+```
+
+
+```{r, echo=TRUE, eval=FALSE}
+tabl <- data.frame("Corpus" = c("Earnings Call Transcrips"), Total = c(480), Tokens = c(4077724))
+kableExtra::kbl(tabl, caption = "Composition of the corpus.", booktabs = T, linesep = "") %>%
+  kableExtra::kable_styling(latex_options = "HOLD_position") %>%
+  kableExtra::kable_classic() %>%
+  kableExtra::row_spec(1, bold=T)
+
+
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+data.copy <- sentiment
+data.copy$sector <- factor(data.copy$sector)
+contrasts(data.copy$sector) <- contr.sum(11)
+lm.check <- lm(negRel ~ sector, data = data.copy)
+summary(lm.check)
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+lm.check2 <- lm(posRel ~ sector, data = data.copy)
+summary(lm.check2)
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+lm.check3 <- lm(negRel ~ sector, data = data.copy)
+summary(lm.check3)
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+sentiment.no$negPer <- sentiment.no$negRel * 100
+sentiment.no$posPer <- sentiment.no$posRel * 100
+sentiment.no$mb_returns <- sentiment.no$mb_returns * 100
+sentiment.no$mf_returns <- sentiment.no$mf_returns * 100
+
+sentiment$negPer <- sentiment$negRel * 100
+sentiment$posPer <- sentiment$posRel * 100
+sentiment$mb_returns <- sentiment$mb_returns * 100
+sentiment$mf_returns <- sentiment$mf_returns * 100
+
+
+sentiment.no <- sentiment.no[!is.na(sentiment.no$mktcap),]
+sentiment.no <- sentiment.no[!is.na(sentiment.no$beta),]
+```
+
+
+```{r, echo=TRUE, eval=FALSE}
+cor(sentiment.no$posPer, sentiment.no$beta)
+cor(sentiment.no$negPer, sentiment.no$mktcap)
+cor(sentiment.no$negPer, sentiment.no$beta)
+cor(sentiment.no$posPer, sentiment.no$beta)
+
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+mean(sentiment.no$posPer)
+mean(sentiment.no$negPer)
+sd(sentiment.no$negPer)
+
+```
+
+## Data Visualization
+
+```{r, echo=TRUE, eval=FALSE}
+ggplot(sentiment, aes(x = posPer)) + 
+  geom_histogram(fill = "#52BE80", alpha = 0.7) +
+  labs(x = "Percent Positive Sentences", y = "Frequency",
+       title = "Distribution of Positive Sentences in Earnings Calls")
+```
+
+
+```{r, echo=TRUE, eval=FALSE}
+ggplot(sentiment, aes(x = mf_returns)) + 
+  geom_histogram(fill = "#5DADE2", alpha = 0.8) +
+  labs(x = "Percent Returns", y = "Frequency",
+       title = "Distribution of Returns One Month After Earnings Calls")
+```
+
+```{r, echo=TRUE, eval=FALSE}
+ggplot(sentiment, aes(x = mb_returns)) + 
+  geom_histogram(fill = "#5DADE2", alpha = 0.8) +
+  labs(x = "Percent Returns", y = "Frequency",
+       title = "Distribution of Returns One Month Before Earnings Calls")
+```
+
+```{r, echo=TRUE, eval=FALSE}
+ggplot(sentiment.no, aes(x = negPer)) + 
+  geom_histogram(fill = "#CB4335", alpha = 0.7) +
+  labs(x = "Percent Negative Sentences", y = "Frequency",
+       title = "Distribution of Negative Sentences in Earnings Calls")
+```
+
+## Modeling
+
+```{r, echo=TRUE, eval=FALSE}
+lmer.forward.neg <- lmer(mf_returns ~ 1 + negPer  + beta + mktcap + (1 | sector), data = sentiment.no)
+lmer.backward.pos <- lmer(posPer ~ mb_returns + (1 | sector), data = sentiment.no)
+lmer.forward.pos <-lmer(mf_returns ~ 1 + posPer  + beta + mktcap + (1 | sector), data = sentiment.no)
+lmer.backward.neg <- lmer(negPer ~ mb_returns + (1 | sector), data = sentiment.no)
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+summary(lmer.forward.pos)
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+summary(lmer.backward.pos)
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+summary(lmer.forward.neg)
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+summary(lmer.backward.neg)
+
+```
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE, eval=FALSE}
+library(dplyr)
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+tabl <- data.frame(
+  Sentiment = c("Positive Sentiment", "Negative Sentiment"),
+  Coefficient = c( 0.1436, -0.4166),
+  SE = c( 0.1009, 0.1969),
+  T.Value = c( 1.787, -4.533),
+  lower.CI = c(-0.0542, -0.8025),
+  upper.CI = c(0.3414, -0.0307))
+kableExtra::kbl(tabl, caption = "Coefficients on Sentiment in Multi-Level Models focused on Returns after Earnings Call", booktabs = T, linesep = "") %>%
+  kableExtra::kable_styling(latex_options = "HOLD_position") %>%
+  kableExtra::kable_classic() 
+```
+
+```{r, echo=TRUE, eval=FALSE}
+tabl2 <- data.frame(
+  Sentiment = c("Positive Sentiment", "Negative Sentiment"),
+  Coefficient = c( 0.0489, -0.0616),
+  SE = c( 0.0274, 0.0136),
+  T.Value = c( 1.787, -4.533),
+  lower.CI = c(-0.0048, -0.088256),
+  upper.CI = c(0.1026, -0.0349))
+kableExtra::kbl(tabl2, caption = "Coefficients on Returns in Multi-Level Models focused on Sentiment", booktabs = T, linesep = "") %>%
+  kableExtra::kable_styling(latex_options = "HOLD_position") %>%
+  kableExtra::kable_classic() 
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+r.11 <- hlm_resid(lmer.forward.neg,level=1,include.ls=F)
+r.11s <- hlm_resid(lmer.forward.neg,level=1,include.ls=F,standardize=T)
+r.21 <- hlm_resid(lmer.forward.neg,level="sector",include.ls=F)
+r.21s <- hlm_resid(lmer.forward.neg,level="sector",include.ls=F,standardize=T)
+
+
+ggplot(r.11, aes(x = .mar.fitted, y = .mar.resid))+
+  geom_point()+
+  geom_abline(intercept = 0, slope = 0, color = "red")
+
+ggplot(r.11, aes(x = .fitted, y = .resid))+
+  geom_point()+
+  geom_abline(intercept = 0, slope = 0, color = "red")
+
+ggplot(r.11s, aes(sample = .std.resid))+
+  stat_qq()+
+  stat_qq_line()
+
+ggplot(r.21s, aes(sample = .std.ranef.intercept))+
+  stat_qq()+
+  stat_qq_line()
+
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+r.12 <- hlm_resid(lmer.forward.pos,level=1,include.ls=F)
+r.12s <- hlm_resid(lmer.forward.pos,level=1,include.ls=F,standardize=T)
+r.22 <- hlm_resid(lmer.forward.pos,level="sector",include.ls=F)
+r.22s <- hlm_resid(lmer.forward.pos,level="sector",include.ls=F,standardize=T)
+
+
+ggplot(r.12, aes(x = .mar.fitted, y = .mar.resid))+
+  geom_point()+
+  geom_abline(intercept = 0, slope = 0, color = "red")
+
+ggplot(r.12, aes(x = .fitted, y = .resid))+
+  geom_point()+
+  geom_abline(intercept = 0, slope = 0, color = "red")
+
+ggplot(r.12s, aes(sample = .std.resid))+
+  stat_qq()+
+  stat_qq_line()
+
+ggplot(r.22s, aes(sample = .std.ranef.intercept))+
+  stat_qq()+
+  stat_qq_line()
+
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+r.13 <- hlm_resid(lmer.backward.neg,level=1,include.ls=F)
+r.13s <- hlm_resid(lmer.backward.neg,level=1,include.ls=F,standardize=T)
+r.23 <- hlm_resid(lmer.backward.neg,level="sector",include.ls=F)
+r.23s <- hlm_resid(lmer.backward.neg,level="sector",include.ls=F,standardize=T)
+
+
+ggplot(r.13, aes(x = .mar.fitted, y = .mar.resid))+
+  geom_point()+
+  geom_abline(intercept = 0, slope = 0, color = "red")
+
+ggplot(r.13, aes(x = .fitted, y = .resid))+
+  geom_point()+
+  geom_abline(intercept = 0, slope = 0, color = "red")
+
+ggplot(r.13s, aes(sample = .std.resid))+
+  stat_qq()+
+  stat_qq_line()
+
+ggplot(r.23s, aes(sample = .std.ranef.intercept))+
+  stat_qq()+
+  stat_qq_line()
+
+
+```
+
+```{r, echo=TRUE, eval=FALSE}
+r.14 <- hlm_resid(lmer.backward.pos,level=1,include.ls=F)
+r.14s <- hlm_resid(lmer.backward.pos,level=1,include.ls=F,standardize=T)
+r.24 <- hlm_resid(lmer.backward.pos,level="sector",include.ls=F)
+r.24s <- hlm_resid(lmer.backward.pos,level="sector",include.ls=F,standardize=T)
+
+
+ggplot(r.14, aes(x = .mar.fitted, y = .mar.resid))+
+  geom_point()+
+  geom_abline(intercept = 0, slope = 0, color = "red")
+
+ggplot(r.14, aes(x = .fitted, y = .resid))+
+  geom_point()+
+  geom_abline(intercept = 0, slope = 0, color = "red")
+
+ggplot(r.14s, aes(sample = .std.resid))+
+  stat_qq()+
+  stat_qq_line()
+
+ggplot(r.24s, aes(sample = .std.ranef.intercept))+
+  stat_qq()+
+  stat_qq_line()
+
+
+```
